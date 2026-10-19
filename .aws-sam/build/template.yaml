@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ColdChain Sentinel
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    MemorySize: 256
+Resources:
+  ReadingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: sensor_id
+        AttributeType: S
+      - AttributeName: seq_no
+        AttributeType: N
+      - AttributeName: shipment_id
+        AttributeType: S
+      - AttributeName: timestamp
+        AttributeType: S
+      KeySchema:
+      - AttributeName: sensor_id
+        KeyType: HASH
+      - AttributeName: seq_no
+        KeyType: RANGE
+      GlobalSecondaryIndexes:
+      - IndexName: by-shipment
+        KeySchema:
+        - AttributeName: shipment_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+  ValidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ValidateFunction
+      Handler: app.handler
+      Environment:
+        Variables:
+          READINGS_TABLE:
+            Ref: ReadingsTable
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ReadingsTable
+    Metadata:
+      SamResourceId: ValidateFunction
+  ReadingRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      TopicRulePayload:
+        Sql: SELECT * FROM 'coldchain/readings'
+        RuleDisabled: false
+        AwsIotSqlVersion: '2016-03-23'
+        Actions:
+        - Lambda:
+            FunctionArn:
+              Fn::GetAtt:
+              - ValidateFunction
+              - Arn
+  IotInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: ValidateFunction
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - ReadingRule
+        - Arn
