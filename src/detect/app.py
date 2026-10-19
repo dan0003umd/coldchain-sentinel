@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 ddb = boto3.resource("dynamodb")
 readings = ddb.Table(os.environ["READINGS_TABLE"])
 incidents = ddb.Table(os.environ["INCIDENTS_TABLE"])
+sensors = ddb.Table(os.environ["SENSORS_TABLE"])
 SAFE_MIN = Decimal(os.environ["SAFE_MIN"])
 SAFE_MAX = Decimal(os.environ["SAFE_MAX"])
 N = int(os.environ["N_CONSECUTIVE"])
@@ -16,6 +17,18 @@ deser = TypeDeserializer()
 
 def out_of_range(t):
     return t < SAFE_MIN or t > SAFE_MAX
+
+def touch_sensor(r):
+    try:
+        sensors.update_item(
+            Key={"sensor_id": r["sensor_id"]},
+            UpdateExpression="SET last_seen = :t, shipment_id = :s, last_seq_no = :q",
+            ConditionExpression="attribute_not_exists(last_seen) OR last_seen < :t",
+            ExpressionAttributeValues={":t": r["ingested_at"], ":s": r["shipment_id"], ":q": r["seq_no"]},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 def open_incident(r):
     item = {
@@ -48,6 +61,7 @@ def handler(event, context):
         if rec["eventName"] != "INSERT":
             continue
         r = {k: deser.deserialize(v) for k, v in rec["dynamodb"]["NewImage"].items()}
+        touch_sensor(r)
         if not out_of_range(r["temp_c"]):
             continue
         latest = readings.query(

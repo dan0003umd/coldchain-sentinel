@@ -39,6 +39,15 @@ Resources:
       KeySchema:
         - {AttributeName: shipment_id, KeyType: HASH}
 
+  SensorsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: sensor_id, AttributeType: S}
+      KeySchema:
+        - {AttributeName: sensor_id, KeyType: HASH}
+
   ValidateFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -60,6 +69,7 @@ Resources:
         Variables:
           READINGS_TABLE: !Ref ReadingsTable
           INCIDENTS_TABLE: !Ref IncidentsTable
+          SENSORS_TABLE: !Ref SensorsTable
           SAFE_MIN: "0"
           SAFE_MAX: "5"
           N_CONSECUTIVE: "4"
@@ -68,6 +78,8 @@ Resources:
             TableName: !Ref ReadingsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IncidentsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SensorsTable
       Events:
         ReadingStream:
           Type: DynamoDB
@@ -78,6 +90,27 @@ Resources:
             FilterCriteria:
               Filters:
                 - Pattern: '{"eventName": ["INSERT"]}'
+
+  SilenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/silence/
+      Handler: app.handler
+      Environment:
+        Variables:
+          SENSORS_TABLE: !Ref SensorsTable
+          INCIDENTS_TABLE: !Ref IncidentsTable
+          SILENCE_SECONDS: "90"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SensorsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+      Events:
+        EveryMinute:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
 
   ReadingRule:
     Type: AWS::IoT::TopicRule
