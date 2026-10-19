@@ -14,23 +14,28 @@ def send(shipment, sensor, seq, temp, ts=None):
     iot.publish(topic=TOPIC, qos=1, payload=json.dumps(msg))
     print("sent", msg)
 
-def run(mode, shipment="SHP-001", sensor="SNS-001", n=20, interval=1.0):
-    for seq in range(1, n + 1):
+def run(mode, shipment, sensor, n=20, interval=1.0, start=None):
+    start = start or int(time.time())
+    for i in range(1, n + 1):
+        seq = start + i
         temp = round(random.uniform(2.0, 4.0), 1)
-        if mode == "sustained" and seq > 8:
+        if mode == "sustained" and i > 8:
             temp = round(random.uniform(7.0, 9.0), 1)
-        if mode == "spike" and seq in (8, 9):
+        if mode == "spike" and i in (8, 9):
             temp = 8.5
-        if mode == "dropout" and seq > 8:
+        if mode == "dropout" and i > 8:
             return
-        if mode == "invalid" and seq % 5 == 0:
+        if mode == "invalid" and i % 5 == 0:
             temp = 999
         send(shipment, sensor, seq, temp)
-        if mode == "duplicate" and seq % 5 == 0:
+        if mode == "duplicate" and i % 5 == 0:
             send(shipment, sensor, seq, temp)
         time.sleep(interval)
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("mode", choices=["normal", "sustained", "spike", "dropout", "invalid", "duplicate"])
-    run(p.parse_args().mode)
+    p.add_argument("--shipment", default="SHP-001")
+    p.add_argument("--sensor", default="SNS-001")
+    a = p.parse_args()
+    run(a.mode, a.shipment, a.sensor)
