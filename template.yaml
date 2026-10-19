@@ -48,6 +48,28 @@ Resources:
       KeySchema:
         - {AttributeName: sensor_id, KeyType: HASH}
 
+  ActionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: incident_id, AttributeType: S}
+        - {AttributeName: action_ts, AttributeType: S}
+      KeySchema:
+        - {AttributeName: incident_id, KeyType: HASH}
+        - {AttributeName: action_ts, KeyType: RANGE}
+
+  FollowupsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: incident_id, AttributeType: S}
+        - {AttributeName: check_ts, AttributeType: S}
+      KeySchema:
+        - {AttributeName: incident_id, KeyType: HASH}
+        - {AttributeName: check_ts, KeyType: RANGE}
+
   ValidateFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -70,6 +92,8 @@ Resources:
           READINGS_TABLE: !Ref ReadingsTable
           INCIDENTS_TABLE: !Ref IncidentsTable
           SENSORS_TABLE: !Ref SensorsTable
+          WORKFLOW_ARN: !Ref IncidentWorkflow
+          WAIT_SECONDS: "30"
           SAFE_MIN: "0"
           SAFE_MAX: "5"
           N_CONSECUTIVE: "4"
@@ -80,6 +104,8 @@ Resources:
             TableName: !Ref IncidentsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref SensorsTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt IncidentWorkflow.Name
       Events:
         ReadingStream:
           Type: DynamoDB
@@ -101,16 +127,162 @@ Resources:
           SENSORS_TABLE: !Ref SensorsTable
           INCIDENTS_TABLE: !Ref IncidentsTable
           SILENCE_SECONDS: "90"
+          WORKFLOW_ARN: !Ref IncidentWorkflow
+          WAIT_SECONDS: "30"
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SensorsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IncidentsTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt IncidentWorkflow.Name
       Events:
         EveryMinute:
           Type: ScheduleV2
           Properties:
             ScheduleExpression: rate(1 minute)
+
+  RecordActionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/workflow/
+      Handler: app.record_action
+      Environment:
+        Variables: &wfenv
+          READINGS_TABLE: !Ref ReadingsTable
+          SENSORS_TABLE: !Ref SensorsTable
+          INCIDENTS_TABLE: !Ref IncidentsTable
+          ACTIONS_TABLE: !Ref ActionsTable
+          FOLLOWUPS_TABLE: !Ref FollowupsTable
+          SAFE_MIN: "0"
+          SAFE_MAX: "5"
+          N_CONSECUTIVE: "4"
+          SILENCE_SECONDS: "90"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActionsTable
+
+  FollowUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/workflow/
+      Handler: app.followup_check
+      Environment:
+        Variables: *wfenv
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReadingsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SensorsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FollowupsTable
+
+  UpdateIncidentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/workflow/
+      Handler: app.update_incident
+      Environment:
+        Variables: *wfenv
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+
+  IncidentWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        RecordActionArn: !GetAtt RecordActionFunction.Arn
+        FollowUpArn: !GetAtt FollowUpFunction.Arn
+        UpdateIncidentArn: !GetAtt UpdateIncidentFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RecordActionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FollowUpFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateIncidentFunction
+      Definition:
+        Comment: Detect -> act -> follow up -> resolve or escalate
+        StartAt: ChooseAction
+        States:
+          ChooseAction:
+            Type: Choice
+            Choices:
+              - Variable: $.issue_type
+                StringEquals: sustained_excursion
+                Next: SetInspectOrReroute
+              - Variable: $.issue_type
+                StringEquals: sensor_silence
+                Next: SetSensorCheck
+            Default: UnknownIssueType
+          SetInspectOrReroute:
+            Type: Pass
+            Result: inspect_or_reroute_request
+            ResultPath: $.action_type
+            Next: RecordAction
+          SetSensorCheck:
+            Type: Pass
+            Result: sensor_check_request
+            ResultPath: $.action_type
+            Next: RecordAction
+          UnknownIssueType:
+            Type: Fail
+            Error: UnknownIssueType
+          RecordAction:
+            Type: Task
+            Resource: ${RecordActionArn}
+            ResultPath: $.action
+            Next: WaitBeforeFollowUp
+          WaitBeforeFollowUp:
+            Type: Wait
+            SecondsPath: $.wait_seconds
+            Next: FollowUpCheck
+          FollowUpCheck:
+            Type: Task
+            Resource: ${FollowUpArn}
+            ResultPath: $.followup
+            Next: IsProblemGone
+          IsProblemGone:
+            Type: Choice
+            Choices:
+              - Variable: $.followup.still_present
+                BooleanEquals: false
+                Next: ResolveIncident
+              - And:
+                  - Variable: $.followup.still_present
+                    BooleanEquals: true
+                  - Variable: $.attempt
+                    NumericLessThan: 1
+                Next: IncrementAttempt
+            Default: EscalateIncident
+          IncrementAttempt:
+            Type: Pass
+            Parameters:
+              shipment_id.$: $.shipment_id
+              incident_id.$: $.incident_id
+              issue_type.$: $.issue_type
+              sensor_id.$: $.sensor_id
+              wait_seconds.$: $.wait_seconds
+              action_type.$: $.action_type
+              attempt.$: "States.MathAdd($.attempt, 1)"
+            Next: WaitBeforeFollowUp
+          ResolveIncident:
+            Type: Task
+            Resource: ${UpdateIncidentArn}
+            Parameters:
+              shipment_id.$: $.shipment_id
+              incident_id.$: $.incident_id
+              new_status: RESOLVED
+            End: true
+          EscalateIncident:
+            Type: Task
+            Resource: ${UpdateIncidentArn}
+            Parameters:
+              shipment_id.$: $.shipment_id
+              incident_id.$: $.incident_id
+              new_status: ESCALATED
+            End: true
 
   ReadingRule:
     Type: AWS::IoT::TopicRule

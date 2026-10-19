@@ -15,11 +15,15 @@ def send(shipment, sensor, seq, temp, ts=None):
     print("sent", msg)
 
 def run(mode, shipment, sensor, n=20, interval=1.0, start=None):
+    if mode == "recover":
+        n = 45
     start = start or int(time.time())
     for i in range(1, n + 1):
         seq = start + i
         temp = round(random.uniform(2.0, 4.0), 1)
         if mode == "sustained" and i > 8:
+            temp = round(random.uniform(7.0, 9.0), 1)
+        if mode == "recover" and 9 <= i <= 14:
             temp = round(random.uniform(7.0, 9.0), 1)
         if mode == "spike" and i in (8, 9):
             temp = 8.5
@@ -34,7 +38,7 @@ def run(mode, shipment, sensor, n=20, interval=1.0, start=None):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=["normal", "sustained", "spike", "dropout", "invalid", "duplicate"])
+    p.add_argument("mode", choices=["normal", "sustained", "spike", "dropout", "invalid", "duplicate", "recover"])
     p.add_argument("--shipment", default="SHP-001")
     p.add_argument("--sensor", default="SNS-001")
     a = p.parse_args()

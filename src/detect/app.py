@@ -7,12 +7,15 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 ddb = boto3.resource("dynamodb")
+sfn = boto3.client("stepfunctions")
 readings = ddb.Table(os.environ["READINGS_TABLE"])
 incidents = ddb.Table(os.environ["INCIDENTS_TABLE"])
 sensors = ddb.Table(os.environ["SENSORS_TABLE"])
 SAFE_MIN = Decimal(os.environ["SAFE_MIN"])
 SAFE_MAX = Decimal(os.environ["SAFE_MAX"])
 N = int(os.environ["N_CONSECUTIVE"])
+WORKFLOW_ARN = os.environ["WORKFLOW_ARN"]
+WAIT = int(os.environ["WAIT_SECONDS"])
 deser = TypeDeserializer()
 
 def out_of_range(t):
@@ -29,6 +32,18 @@ def touch_sensor(r):
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+
+def start_workflow(item):
+    payload = {"shipment_id": item["shipment_id"], "incident_id": item["incident_id"],
+               "issue_type": item["issue_type"], "sensor_id": item["sensor_id"],
+               "attempt": 0, "wait_seconds": WAIT}
+    try:
+        sfn.start_execution(stateMachineArn=WORKFLOW_ARN, name=item["incident_id"],
+                            input=json.dumps(payload))
+        print(json.dumps({"result": "workflow_started", "incident_id": item["incident_id"]}))
+    except ClientError as e:
+        print(json.dumps({"result": "workflow_start_failed", "error": str(e)}))
+        raise
 
 def open_incident(r):
     item = {
@@ -49,12 +64,13 @@ def open_incident(r):
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":resolved": "RESOLVED"},
         )
-        print(json.dumps({"result": "incident_opened", **item}, default=str))
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             print(json.dumps({"result": "duplicate_alert_suppressed", "shipment_id": r["shipment_id"]}))
-        else:
-            raise
+            return
+        raise
+    print(json.dumps({"result": "incident_opened", **item}, default=str))
+    start_workflow(item)
 
 def handler(event, context):
     for rec in event["Records"]:
