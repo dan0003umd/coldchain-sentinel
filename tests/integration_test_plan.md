@@ -1,6 +1,6 @@
 # ColdChain Sentinel — Integration Test Plan
 
-**Project:** MSML 650 Cloud Computing — Group 8  
+**Project:** MSML 650 Cloud Computing — Group 8
 **Testing responsibility:** Simulation and Testing
 
 ## Objective
@@ -48,9 +48,45 @@ Each test will use a distinct shipment ID and sensor ID to reduce interference b
 
 Results will be recorded as expected versus actual outcomes. Any suspected backend defects will be documented and communicated to the backend developer rather than modified as part of the testing role.
 
+## Integration Test Results
+
+**Test date:** October 30, 2026
+**Environment:** AWS, us-east-1 (individual testing account)
+**Overall result:** 7 of 7 scenarios passed
+
+| Scenario | Actual Result | Status |
+|---|---|---|
+| Normal | 20 readings stored; no sustained-temperature excursion. A sensor-silence incident occurred after transmission stopped. | PASS |
+| Brief spike | 20 readings stored; two consecutive high readings did not trigger a sustained excursion. | PASS |
+| Sustained excursion | 20 readings sent; four consecutive high readings triggered an incident, an inspect/reroute request, follow-up checks, and escalation. | PASS |
+| Sensor dropout | 8 readings stored; sensor silence detected, sensor-check action recorded, two follow-ups completed, and incident escalated. | PASS |
+| Invalid readings | 20 readings transmitted; 4 invalid readings rejected and 16 valid readings stored. | PASS |
+| Duplicate readings | 24 messages transmitted; 4 duplicates suppressed and 20 unique readings stored. | PASS |
+| Recovery | 45 readings stored; sustained excursion detected, inspect/reroute request recorded, first follow-up confirmed recovery, and incident resolved. | PASS |
+
+## Observed Performance Metrics
+
+| Metric | Observed Result |
+|---|---|
+| Scenario pass rate | 7/7 (100%) |
+| Invalid-reading rejection | 4/4 (100%) |
+| Duplicate-reading suppression | 4/4 (100%) |
+| Sustained excursion detection latency | 0.44 seconds |
+| Sustained excursion action latency | 0.92 seconds |
+| Sustained excursion reading-to-action latency | 1.36 seconds |
+| Sensor dropout detection delay | 137.27 seconds |
+| Sustained incident duration | 63.05 seconds |
+| Dropout incident duration | 62.93 seconds |
+
+Performance measurements represent individual observed executions, not averages from repeated trials.
+
+The simulator stops transmitting after each scenario. Subsequent sensor-silence incidents may therefore occur and should not automatically be classified as false temperature-excursion alerts.
+
+Recorded automated actions represent requests stored by the workflow, not confirmation of physical inspection or rerouting.
+
 ## Current Status
 
-- Seven local simulator unit tests completed successfully.
-- Integration tests not yet executed.
-- AWS environment and access arrangements pending confirmation from Dhanraj.
-- No live performance measurements collected yet.
+- Seven local simulator unit tests passed.
+- Seven AWS integration scenarios passed based on the recorded observations.
+- Recovery workflow verified through Readings, Incidents, Actions, and Followups tables.
+- Backend implementation was not modified during testing.
