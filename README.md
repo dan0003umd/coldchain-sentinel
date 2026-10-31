@@ -77,6 +77,54 @@ aws sts get-caller-identity
 
 ## Deploy
 
+### Billing alarm prerequisites
+
+The template creates a CloudWatch alarm for estimated account charges and an SNS topic named
+`<stack-name>-billing-alerts`. Billing metrics are available in **us-east-1** and cover worldwide
+estimated charges. Before deploying, enable **Receive CloudWatch Billing Alerts** under AWS Billing
+and Cost Management > Billing preferences > Alert preferences. AWS may take about 15 minutes to
+publish the first billing metrics. This is an account-level preference; review its effect before
+enabling it.
+
+Deploy with a threshold in USD. To receive email notifications, pass an email address; SNS sends a
+confirmation message that must be accepted before notifications arrive. Leave the email parameter
+empty to create the alarm and topic without an email subscription.
+
+```
+sam deploy --guided --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com
+```
+
+For later deploys, keep the same parameters:
+
+```
+sam deploy --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com
+```
+
+Set `BillingAlarmEmail=` to omit the email subscription. The alarm evaluates the maximum estimated
+charges every six hours. Billing metrics can be delayed, so this is a spend notification and not a
+real-time spending cap.
+
+### Lambda IAM review
+
+The SAM template creates a separate execution role for each function. The DynamoDB permissions in
+those roles are limited to the calls each handler uses:
+
+| Function | DynamoDB access |
+|---|---|
+| `ValidateFunction` | `PutItem` on readings |
+| `DetectFunction` | `Query` readings; `PutItem` incidents; `UpdateItem` sensors |
+| `SilenceFunction` | `Scan` sensors; `PutItem` incidents |
+| `RecordActionFunction` | `PutItem` actions |
+| `FollowUpFunction` | `Query` readings; `GetItem` sensors; `PutItem` follow-ups |
+| `UpdateIncidentFunction` | `UpdateItem` incidents |
+
+Detection and silence functions also need `states:StartExecution` for the incident state machine.
+The state machine role can invoke only its three workflow Lambdas. Lambda log permissions are
+provided by SAM's generated execution roles. These are function permissions; they do not replace
+the separate IAM permissions required by the person or CI identity deploying the stack.
+
+### Deploy the application
+
 ```
 sam build
 sam deploy --guided
