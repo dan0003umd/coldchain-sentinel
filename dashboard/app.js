@@ -78,8 +78,9 @@ function buildTimeline(inc) {
 
   // 5. workflow result (closed_at on the incident)
   if (inc.closed_at) {
-    events.push({ ts: inc.closed_at, type: inc.status === "RESOLVED" ? "good" : "bad",
-      title: `Workflow marked ${inc.status}`, body: "" });
+    const result = inc.workflow_status || inc.status; // what the workflow decided (before any override)
+    events.push({ ts: inc.closed_at, type: result === "RESOLVED" ? "good" : "bad",
+      title: `Workflow marked ${result}`, body: "" });
   }
 
   // oldest first
@@ -213,7 +214,8 @@ function renderDetail(shipmentId) {
     const reason = e.target.reason.value.trim();
     if (!reason) return;
 
-    // 1. change the status on the incident
+    // 1. remember what the workflow decided, then change the status
+    if (!inc.workflow_status) inc.workflow_status = inc.status;
     inc.status = newStatus;
     inc.overridden_by = document.getElementById("user-name").textContent;
 
