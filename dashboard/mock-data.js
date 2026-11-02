@@ -8,15 +8,15 @@ function ago(secondsAgo) {
 // incidents table: one current incident per shipment
 const incidents = [
   { shipment_id: "SHP-001", incident_id: "inc-001", issue_type: "sustained_excursion",
-    status: "RESOLVED", sensor_id: "SNS-001", opened_at: ago(400), closed_at: ago(360),
+    status: "RESOLVED", sensor_id: "SNS-001", opened_at: ago(400), closed_at: ago(368),
     trigger_temp_c: 7.9, trigger_seq_no: 11 },
 
   { shipment_id: "SHP-002", incident_id: "inc-002", issue_type: "sustained_excursion",
-    status: "ESCALATED", sensor_id: "SNS-002", opened_at: ago(1000), closed_at: ago(939),
+    status: "ESCALATED", sensor_id: "SNS-002", opened_at: ago(1000), closed_at: ago(938),
     trigger_temp_c: 8.9, trigger_seq_no: 12 },
 
   { shipment_id: "SHP-003", incident_id: "inc-003", issue_type: "sensor_silence",
-    status: "ESCALATED", sensor_id: "SNS-003", opened_at: ago(1400), closed_at: ago(1340),
+    status: "ESCALATED", sensor_id: "SNS-003", opened_at: ago(1400), closed_at: ago(1339),
     last_seen_at: ago(1500), silent_for_seconds: 100 },
 
   { shipment_id: "SHP-004", incident_id: "inc-004", issue_type: "sustained_excursion",
