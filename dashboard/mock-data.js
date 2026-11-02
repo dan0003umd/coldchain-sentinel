@@ -50,3 +50,23 @@ const followups = {
 const notes = {
   "inc-002": [{ note_ts: ago(900), author: "swetha@umd.edu", text: "Called carrier, reefer unit fault.", override_flag: false }],
 };
+
+// readings table: temperature readings per shipment, one every 30 seconds
+// makeReadings(list of temps, seconds ago of the LAST reading)
+function makeReadings(temps, lastSecondsAgo) {
+  return temps.map((temp, i) => ({
+    timestamp: ago(lastSecondsAgo + (temps.length - 1 - i) * 30),
+    temp_c: temp,
+  }));
+}
+
+const readings = {
+  // went hot, then came back to normal -> RESOLVED
+  "SHP-001": makeReadings([3.1, 3.4, 3.0, 2.8, 3.2, 7.4, 8.1, 7.9, 8.6, 6.8, 3.9, 3.2, 3.0, 2.9, 3.1], 300),
+  // went hot and stayed hot -> ESCALATED
+  "SHP-002": makeReadings([3.0, 3.3, 2.9, 3.1, 3.4, 7.1, 7.8, 8.4, 8.9, 8.2, 8.7, 8.0, 8.5], 900),
+  // normal readings, then the sensor stopped sending -> silence
+  "SHP-003": makeReadings([3.2, 3.0, 3.3, 3.1, 2.9, 3.0, 3.2, 3.1], 1500),
+  // got too cold, still happening -> OPEN
+  "SHP-004": makeReadings([2.9, 3.1, 3.0, 2.7, 1.2, -0.8, -1.4, -1.9, -2.2], 70),
+};

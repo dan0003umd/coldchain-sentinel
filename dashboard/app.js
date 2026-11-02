@@ -94,6 +94,46 @@ function buildTimeline(inc) {
   `).join("");
 }
 
+// ----- temperature chart (uses Chart.js) -----
+let chart = null; // keep the chart so we can delete it before drawing a new one
+
+function drawChart(shipmentId) {
+  const data = readings[shipmentId] || [];
+  const labels = data.map((r) => new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+  const temps = data.map((r) => r.temp_c);
+
+  // red dots for readings outside the safe range (0 to 5 C)
+  const dotColors = temps.map((t) => (t < 0 || t > 5 ? "#c53030" : "#0f6e8c"));
+
+  if (chart) chart.destroy(); // remove the old chart
+
+  chart = new Chart(document.getElementById("temp-chart"), {
+    type: "line",
+    data: {
+      labels: labels,
+      datasets: [
+        // 1. the actual temperatures
+        { label: "Temperature (°C)", data: temps, borderColor: "#0f6e8c",
+          pointBackgroundColor: dotColors, pointBorderColor: dotColors, pointRadius: 4, tension: 0.2 },
+        // 2 + 3. two flat lines at 0 and 5; the area between them is shaded green = safe range
+        { label: "Safe range", data: temps.map(() => 5), borderColor: "rgba(47,133,90,0.4)",
+          borderDash: [5, 5], pointRadius: 0, fill: "+1", backgroundColor: "rgba(47,133,90,0.08)" },
+        { label: "", data: temps.map(() => 0), borderColor: "rgba(47,133,90,0.4)",
+          borderDash: [5, 5], pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { filter: (item) => item.text !== "" } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6, maxRotation: 0 } },
+        y: { title: { display: true, text: "°C" } },
+      },
+    },
+  });
+}
+
 // ----- draw the detail panel (right panel) -----
 function renderDetail(shipmentId) {
   const inc = incidents.find((i) => i.shipment_id === shipmentId);
@@ -117,9 +157,15 @@ function renderDetail(shipmentId) {
       ${extra}
     </div>
 
+    <h3>Temperature readings</h3>
+    <div class="chart-box"><canvas id="temp-chart"></canvas></div>
+    ${inc.issue_type === "sensor_silence" ? `<p class="muted">The sensor stopped sending after the last point.</p>` : ""}
+
     <h3>History</h3>
     <ol class="timeline">${buildTimeline(inc)}</ol>
   `;
+
+  drawChart(inc.shipment_id); // the canvas exists now, so draw the chart
 }
 
 // ----- filter buttons -----
