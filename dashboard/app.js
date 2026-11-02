@@ -161,9 +161,74 @@ function renderDetail(shipmentId) {
     <div class="chart-box"><canvas id="temp-chart"></canvas></div>
     ${inc.issue_type === "sensor_silence" ? `<p class="muted">The sensor stopped sending after the last point.</p>` : ""}
 
-    <h3>History</h3>
-    <ol class="timeline">${buildTimeline(inc)}</ol>
+    <div class="two-col">
+      <div>
+        <h3>History</h3>
+        <ol class="timeline">${buildTimeline(inc)}</ol>
+      </div>
+
+      <div>
+        <h3>Override status</h3>
+        <form id="override-form" class="box">
+          <p class="muted small">Use this when you know better than the automated workflow.</p>
+          <select name="new_status">
+            ${["RESOLVED", "ESCALATED"].filter((s) => s !== inc.status)
+              .map((s) => `<option value="${s}">Set to ${s}</option>`).join("")}
+          </select>
+          <textarea name="reason" rows="2" placeholder="Reason (required)" required></textarea>
+          <button type="submit" class="btn primary">Apply override</button>
+        </form>
+
+        <h3>Notes</h3>
+        <form id="note-form" class="box">
+          <textarea name="text" rows="2" placeholder="Add a note for other reviewers" required></textarea>
+          <button type="submit" class="btn">Add note</button>
+        </form>
+      </div>
+    </div>
   `;
+
+  // ----- add a note -----
+  document.getElementById("note-form").addEventListener("submit", (e) => {
+    e.preventDefault(); // stop the page from reloading
+    const text = e.target.text.value.trim();
+    if (!text) return;
+
+    // save into the notes "table" (later this becomes a POST to the API)
+    if (!notes[inc.incident_id]) notes[inc.incident_id] = [];
+    notes[inc.incident_id].push({
+      note_ts: new Date().toISOString(),
+      author: document.getElementById("user-name").textContent,
+      text: text,
+      override_flag: false,
+    });
+
+    renderDetail(inc.shipment_id); // redraw so the note shows in the history
+  });
+
+  // ----- override the status -----
+  document.getElementById("override-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const newStatus = e.target.new_status.value;
+    const reason = e.target.reason.value.trim();
+    if (!reason) return;
+
+    // 1. change the status on the incident
+    inc.status = newStatus;
+    inc.overridden_by = document.getElementById("user-name").textContent;
+
+    // 2. record it as a note with override_flag = true (so there is a record of who and why)
+    if (!notes[inc.incident_id]) notes[inc.incident_id] = [];
+    notes[inc.incident_id].push({
+      note_ts: new Date().toISOString(),
+      author: inc.overridden_by,
+      text: `Status set to ${newStatus}: ${reason}`,
+      override_flag: true,
+    });
+
+    renderList();                // badge on the left changes
+    renderDetail(inc.shipment_id); // badge + history on the right change
+  });
 
   drawChart(inc.shipment_id); // the canvas exists now, so draw the chart
 }
