@@ -1,0 +1,31 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; background: #f4f6f8; color: #15202b; }
+
+.topbar { display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px; background: white; border-bottom: 1px solid #e1e6eb; }
+.topbar h1 { font-size: 18px; margin: 0; }
+
+.layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px; }
+.panel { background: white; border: 1px solid #e1e6eb; border-radius: 10px; padding: 16px; }
+.muted { color: #5d6b78; }
+
+/* filter buttons */
+.chip { border: 1px solid #ccc; background: white; border-radius: 999px;
+  padding: 4px 12px; cursor: pointer; margin: 0 4px 10px 0; }
+.chip.active { background: #15202b; color: white; }
+
+/* incident list */
+#incident-list { list-style: none; padding: 0; margin: 0; }
+.incident { padding: 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.incident:hover { background: #f4f6f8; }
+.incident.selected { border-color: #0f6e8c; background: #f4f6f8; }
+.incident small { color: #5d6b78; }
+
+/* status badges */
+.badge { font-size: 11px; font-weight: bold; padding: 2px 8px; border-radius: 999px; float: right; }
+.badge.OPEN { background: #fdf3e1; color: #b7791f; }
+.badge.ESCALATED { background: #fde8e8; color: #c53030; }
+.badge.RESOLVED { background: #e3f4ea; color: #2f855a; }
+
+/* phone layout: stack the panels */
+@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }

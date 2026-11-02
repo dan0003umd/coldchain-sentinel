@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ColdChain Sentinel</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>ColdChain Sentinel</h1>
+    <!-- Cognito login will replace this later -->
+    <span id="user-name">reviewer@umd.edu</span>
+  </header>
+
+  <main class="layout">
+    <!-- LEFT: list of incidents -->
+    <aside class="panel">
+      <h2>Incidents</h2>
+      <div id="filters">
+        <button class="chip active" data-status="ALL">All</button>
+        <button class="chip" data-status="OPEN">Open</button>
+        <button class="chip" data-status="ESCALATED">Escalated</button>
+        <button class="chip" data-status="RESOLVED">Resolved</button>
+      </div>
+      <ul id="incident-list"></ul>
+    </aside>
+
+    <!-- RIGHT: details of the selected incident -->
+    <section class="panel" id="detail">
+      <p class="muted">Select an incident to see its details.</p>
+    </section>
+  </main>
+
+  <script src="mock-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
