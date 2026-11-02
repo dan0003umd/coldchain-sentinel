@@ -13,8 +13,8 @@ response workflow with a follow-up check. MSML 650 Cloud Computing, Fall 2026, G
 | Sustained excursion vs. brief spike | DynamoDB Stream, Lambda (`DetectFunction`), `IncidentsTable` | Done |
 | Silent sensor detection | EventBridge Scheduler (every minute), Lambda (`SilenceFunction`), `SensorsTable` | Done |
 | Response workflow and follow-up | Step Functions (`IncidentWorkflow`), 3 Lambdas, `ActionsTable`, `FollowupsTable` | Done |
-| Reviewer dashboard, API, auth | API Gateway, Lambda, Cognito, S3/CloudFront | Not started |
-| Monitoring dashboards and test metrics | CloudWatch | Not started |
+| Reviewer dashboard, API, auth | API Gateway, Lambda, Cognito, S3/CloudFront | Read-only incident list and hosting implemented; notes/override not started |
+| Operational monitoring and cost alarm | CloudWatch, SNS | Dashboard, service alarms, billing alarm implemented |
 
 ## How the pipeline works
 
@@ -38,6 +38,9 @@ src/validate/app.py    # validates readings, drops invalid and duplicate ones
 src/detect/app.py      # sustained-vs-spike logic, opens incidents, tracks last-seen, starts workflow
 src/silence/app.py     # scheduled check for silent sensors, opens incidents, starts workflow
 src/workflow/app.py    # workflow steps: record action, follow-up check, resolve or escalate
+src/reviewer/app.py    # Cognito-protected, read-only incident-list API
+dashboard/index.html   # hosted reviewer dashboard with Cognito PKCE sign-in
+scripts/deploy_dashboard.py # writes stack config, uploads dashboard, invalidates CloudFront
 simulator/sim.py       # sends test readings (7 scenario modes)
 docs/contract.md       # agreed message format, issue definitions, tables, response flow
 ```
@@ -86,23 +89,10 @@ and Cost Management > Billing preferences > Alert preferences. AWS may take abou
 publish the first billing metrics. This is an account-level preference; review its effect before
 enabling it.
 
-Deploy with a threshold in USD. To receive email notifications, pass an email address; SNS sends a
-confirmation message that must be accepted before notifications arrive. Leave the email parameter
-empty to create the alarm and topic without an email subscription.
-
-```
-sam deploy --guided --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com
-```
-
-For later deploys, keep the same parameters:
-
-```
-sam deploy --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com
-```
-
-Set `BillingAlarmEmail=` to omit the email subscription. The alarm evaluates the maximum estimated
-charges every six hours. Billing metrics can be delayed, so this is a spend notification and not a
-real-time spending cap.
+Set the alarm threshold in USD. To receive notifications, supply an email address in
+`BillingAlarmEmail`; SNS sends a confirmation message that must be accepted. Leave that parameter
+empty to create the alarm and topic without an email subscription. The alarm evaluates estimated
+charges every six hours, so it is a spend notification and not a real-time spending cap.
 
 ### Lambda IAM review
 
@@ -117,22 +107,60 @@ those roles are limited to the calls each handler uses:
 | `RecordActionFunction` | `PutItem` actions |
 | `FollowUpFunction` | `Query` readings; `GetItem` sensors; `PutItem` follow-ups |
 | `UpdateIncidentFunction` | `UpdateItem` incidents |
+| `ReviewerApiFunction` | `Scan` incidents (read-only) |
 
 Detection and silence functions also need `states:StartExecution` for the incident state machine.
 The state machine role can invoke only its three workflow Lambdas. Lambda log permissions are
 provided by SAM's generated execution roles. These are function permissions; they do not replace
 the separate IAM permissions required by the person or CI identity deploying the stack.
 
+### Reviewer dashboard and Cognito
+
+The stack creates an admin-managed Cognito user pool, a public OAuth client using authorization
+code with PKCE, a Cognito authorizer for `GET /incidents`, and a private S3 bucket served through
+CloudFront Origin Access Control. The dashboard page is `dashboard/index.html`; the read-only API
+handler is `src/reviewer/app.py`.
+
+Choose a globally unique lowercase `CognitoDomainPrefix` at deployment. To give a reviewer access,
+open Cognito in the AWS console, select the `<stack-name>-reviewers` user pool, and create a user
+with the reviewer’s email. Self-registration is disabled. Sign-in uses the Cognito hosted UI; a
+reviewer may need to confirm their email or change a temporary password at first sign-in.
+
+After deployment completes and the CloudFront distribution is available, publish the dashboard:
+
+```
+python scripts/deploy_dashboard.py --stack coldchain-sentinel --region us-east-1
+```
+
+The script reads CloudFormation outputs, writes the ignored `dashboard/config.json`, uploads the
+static files to the private bucket, and invalidates CloudFront. The AWS identity running it needs
+CloudFormation `DescribeStacks`, S3 `PutObject`/`DeleteObject` for that bucket, and CloudFront
+`CreateInvalidation`. Open the `DashboardUrl` stack output. The generated config contains public
+endpoint and client identifiers, not a client secret.
+
+The reviewer UI currently lists incidents and filters by status. It does not yet include reviewer
+notes, manual overrides, or full shipment reading history.
+
+### CloudWatch operations dashboard and alarms
+
+In CloudWatch in `us-east-1`, open the `<stack-name>-operations` dashboard. It graphs Lambda
+invocations, errors and duration, Step Functions execution outcomes, and DynamoDB throttled requests.
+Alarms notify the SNS topic `<stack-name>-billing-alerts` for Lambda errors, failed workflow runs,
+DynamoDB throttles, and estimated charges. If `BillingAlarmEmail` was provided at deployment, confirm
+the SNS email subscription to receive alarm notifications.
+
 ### Deploy the application
 
 ```
 sam build
-sam deploy --guided
+sam deploy --guided --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com CognitoDomainPrefix=choose-a-unique-prefix
 ```
 
 Answers for the guided prompts: stack name `coldchain-sentinel`, region `us-east-1`,
 confirm changes `N`, allow IAM role creation `Y`, save arguments `Y`.
-For later deploys, run `sam build` then `sam deploy`.
+For later deploys, run `sam build` then `sam deploy` with the same parameter overrides. Use
+`BillingAlarmEmail=` if you do not want email notifications. Replace the Cognito prefix with a
+unique lowercase value for your AWS region.
 
 The first time an account uses IoT Core, its endpoint name can take a few minutes to resolve.
 If the simulator fails with a DNS error, wait and retry.
@@ -181,6 +209,14 @@ To reset a test, delete the shipment's item in the incidents table (AWS Console 
 
 ## Clean up (stops all charges)
 
+Empty the hosted dashboard bucket before deleting the stack:
+
+```
+aws s3 rm s3://<DASHBOARD_BUCKET_NAME> --recursive --region us-east-1
+```
+
+Find the bucket name in the stack outputs, then remove the stack:
+
 ```
 sam delete --stack-name coldchain-sentinel --region us-east-1
 ```
@@ -205,5 +241,5 @@ sam delete --stack-name coldchain-sentinel --region us-east-1
 
 ## Remaining work
 
-Reviewer dashboard and API (history, notes, override), Cognito authentication and dashboard hosting,
-CloudWatch dashboards and alarms, accuracy and latency measurements, final report and demo.
+Reviewer dashboard notes, manual overrides, and full shipment reading history; accuracy and latency
+measurements; final report and demo.

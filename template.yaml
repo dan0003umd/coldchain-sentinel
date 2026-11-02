@@ -18,6 +18,12 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional email address for billing alarm notifications. Confirm the SNS subscription email after deployment.
+  CognitoDomainPrefix:
+    Type: String
+    MinLength: 3
+    MaxLength: 63
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*[a-z0-9]$'
+    Description: Globally unique Cognito hosted UI prefix for this AWS region.
 
 Conditions:
   HasBillingAlarmEmail: !Not [!Equals [!Ref BillingAlarmEmail, '']]
@@ -225,6 +231,29 @@ Resources:
               Action: dynamodb:UpdateItem
               Resource: !GetAtt IncidentsTable.Arn
 
+  ReviewerApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENTS_TABLE: !Ref IncidentsTable
+          ALLOWED_ORIGIN: !Sub 'https://${DashboardDistribution.DomainName}'
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Scan
+              Resource: !GetAtt IncidentsTable.Arn
+      Events:
+        ListIncidents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /incidents
+            Method: GET
+
   IncidentWorkflow:
     Type: AWS::Serverless::StateMachine
     Properties:
@@ -335,7 +364,7 @@ Resources:
   EstimatedChargesAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub 'Estimated AWS charges reached $${BillingAlarmThreshold} USD.'
+      AlarmDescription: !Sub 'Estimated charges reached the configured threshold of ${BillingAlarmThreshold} USD.'
       AlarmName: !Sub '${AWS::StackName}-estimated-charges'
       Namespace: AWS/Billing
       MetricName: EstimatedCharges
@@ -350,6 +379,236 @@ Resources:
       TreatMissingData: missing
       AlarmActions:
         - !Ref BillingAlarmTopic
+
+  ReviewerUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-reviewers'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+  ReviewerUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref ReviewerUserPool
+  ReviewerUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ReviewerUserPool
+      ClientName: !Sub '${AWS::StackName}-dashboard'
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      CallbackURLs:
+        - !Sub 'https://${DashboardDistribution.DomainName}/'
+      LogoutURLs:
+        - !Sub 'https://${DashboardDistribution.DomainName}/'
+      SupportedIdentityProviders: [COGNITO]
+
+  ReviewerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Authorization,Content-Type'"
+        AllowOrigin: !Sub "'https://${DashboardDistribution.DomainName}'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt ReviewerUserPool.Arn
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  DashboardOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-dashboard-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - Id: DashboardS3Origin
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt DashboardOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: DashboardS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${DashboardBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}'
+
+  ValidateErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties: &lambda_errors_alarm
+      AlarmDescription: Lambda invocation errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ValidateFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  DetectErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DetectFunction
+  SilenceErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SilenceFunction
+  ReviewerApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ReviewerApiFunction
+  RecordActionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RecordActionFunction
+  FollowUpErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FollowUpFunction
+  UpdateIncidentErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UpdateIncidentFunction
+  WorkflowFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Incident state machine executions failed.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref IncidentWorkflow
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  ReadingsThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Readings table requests were throttled.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref ReadingsTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  IncidentsThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Incidents table requests were throttled.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref IncidentsTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  SentinelDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-operations'
+      DashboardBody: !Sub |
+        {"widgets":[
+          {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"Lambda invocations and errors","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/Lambda","Invocations","FunctionName","${ValidateFunction}"],["AWS/Lambda","Errors","FunctionName","${ValidateFunction}",{"yAxis":"right"}],["AWS/Lambda","Invocations","FunctionName","${DetectFunction}"],["AWS/Lambda","Errors","FunctionName","${DetectFunction}",{"yAxis":"right"}],["AWS/Lambda","Invocations","FunctionName","${SilenceFunction}"],["AWS/Lambda","Errors","FunctionName","${SilenceFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${ReviewerApiFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${RecordActionFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${FollowUpFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${UpdateIncidentFunction}",{"yAxis":"right"}]]}},
+          {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Lambda duration (milliseconds)","region":"${AWS::Region}","view":"timeSeries","stat":"Average","period":300,"metrics":[["AWS/Lambda","Duration","FunctionName","${ValidateFunction}"],["AWS/Lambda","Duration","FunctionName","${DetectFunction}"],["AWS/Lambda","Duration","FunctionName","${SilenceFunction}"],["AWS/Lambda","Duration","FunctionName","${ReviewerApiFunction}"],["AWS/Lambda","Duration","FunctionName","${RecordActionFunction}"],["AWS/Lambda","Duration","FunctionName","${FollowUpFunction}"],["AWS/Lambda","Duration","FunctionName","${UpdateIncidentFunction}"]] }},
+          {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Incident workflow executions","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","${IncidentWorkflow}"],["AWS/States","ExecutionsSucceeded","StateMachineArn","${IncidentWorkflow}"],["AWS/States","ExecutionsFailed","StateMachineArn","${IncidentWorkflow}"]]}},
+          {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"DynamoDB throttled requests","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/DynamoDB","ThrottledRequests","TableName","${ReadingsTable}"],["AWS/DynamoDB","ThrottledRequests","TableName","${IncidentsTable}"]]}}
+        ]}
 
   ReadingRule:
     Type: AWS::IoT::TopicRule
@@ -369,3 +628,26 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: iot.amazonaws.com
       SourceArn: !GetAtt ReadingRule.Arn
+
+Outputs:
+  ReviewerApiUrl:
+    Description: Authenticated reviewer API base URL.
+    Value: !Sub 'https://${ReviewerApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  DashboardBucketName:
+    Description: Private S3 bucket for dashboard static assets.
+    Value: !Ref DashboardBucket
+  DashboardDistributionId:
+    Description: CloudFront distribution ID used to invalidate cached dashboard files.
+    Value: !Ref DashboardDistribution
+  DashboardUrl:
+    Description: CloudFront URL for the reviewer dashboard.
+    Value: !Sub 'https://${DashboardDistribution.DomainName}/'
+  CognitoUserPoolId:
+    Description: Cognito user pool ID.
+    Value: !Ref ReviewerUserPool
+  CognitoClientId:
+    Description: Public Cognito app client ID used by the dashboard.
+    Value: !Ref ReviewerUserPoolClient
+  CognitoDomain:
+    Description: Cognito hosted UI domain prefix.
+    Value: !Ref CognitoDomainPrefix
