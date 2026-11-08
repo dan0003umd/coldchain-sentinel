@@ -83,6 +83,16 @@ Resources:
       KeySchema:
         - {AttributeName: incident_id, KeyType: HASH}
         - {AttributeName: check_ts, KeyType: RANGE}
+  NotesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: incident_id, AttributeType: S}
+        - {AttributeName: note_ts, AttributeType: S}
+      KeySchema:
+        - {AttributeName: incident_id, KeyType: HASH}
+        - {AttributeName: note_ts, KeyType: RANGE}
 
   ValidateFunction:
     Type: AWS::Serverless::Function
@@ -231,8 +241,12 @@ Resources:
       CodeUri: src/reviewer/
       Handler: app.handler
       Environment:
-        Variables:
+        Variables: &reviewerenv
           INCIDENTS_TABLE: !Ref IncidentsTable
+          ACTIONS_TABLE: !Ref ActionsTable
+          FOLLOWUPS_TABLE: !Ref FollowupsTable
+          NOTES_TABLE: !Ref NotesTable
+          READINGS_TABLE: !Ref ReadingsTable
           ALLOWED_ORIGIN: !Sub 'https://${DashboardDistribution.DomainName}'
       Policies:
         - Version: '2012-10-17'
@@ -247,6 +261,98 @@ Resources:
             RestApiId: !Ref ReviewerApi
             Path: /incidents
             Method: GET
+  IncidentDetailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.get_incident
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt IncidentsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource:
+                - !GetAtt ActionsTable.Arn
+                - !GetAtt FollowupsTable.Arn
+                - !GetAtt NotesTable.Arn
+      Events:
+        IncidentDetail:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/incident
+            Method: GET
+
+  ReadingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.get_readings
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub '${ReadingsTable.Arn}/index/by-shipment'
+      Events:
+        Readings:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/readings
+            Method: GET
+
+  AddNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.add_note
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt NotesTable.Arn
+      Events:
+        AddNote:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /incidents/{incident_id}/notes
+            Method: POST
+
+  OverrideFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.override
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt IncidentsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt NotesTable.Arn
+      Events:
+        Override:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/override
+            Method: POST
 
   IncidentWorkflow:
     Type: AWS::Serverless::StateMachine
@@ -379,7 +485,7 @@ Resources:
     Properties:
       StageName: prod
       Cors:
-        AllowMethods: "'GET,OPTIONS'"
+        AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'Authorization,Content-Type'"
         AllowOrigin: !Sub "'https://${DashboardDistribution.DomainName}'"
       Auth:
