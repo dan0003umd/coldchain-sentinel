@@ -33,7 +33,7 @@ def main():
     }
     required = {
         "ReviewerApiUrl", "DashboardBucketName", "DashboardDistributionId",
-        "CognitoClientId", "CognitoDomain",
+        "ReviewerUserPoolId", "ReviewerUserPoolClientId",
     }
     missing = required - outputs.keys()
     if missing:
@@ -42,10 +42,11 @@ def main():
             ". Deploy the updated template first."
         )
 
+    # read by dashboard/api.js (loadConfig); sign-in uses SRP, so no hosted-UI domain
     config = {
         "apiUrl": outputs["ReviewerApiUrl"],
-        "clientId": outputs["CognitoClientId"],
-        "cognitoDomain": f"{outputs['CognitoDomain']}.auth.{args.region}.amazoncognito.com",
+        "userPoolId": outputs["ReviewerUserPoolId"],
+        "clientId": outputs["ReviewerUserPoolClientId"],
     }
     config_path = DASHBOARD_DIR / "config.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

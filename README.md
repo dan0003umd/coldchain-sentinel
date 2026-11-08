@@ -13,7 +13,7 @@ response workflow with a follow-up check. MSML 650 Cloud Computing, Fall 2026, G
 | Sustained excursion vs. brief spike | DynamoDB Stream, Lambda (`DetectFunction`), `IncidentsTable` | Done |
 | Silent sensor detection | EventBridge Scheduler (every minute), Lambda (`SilenceFunction`), `SensorsTable` | Done |
 | Response workflow and follow-up | Step Functions (`IncidentWorkflow`), 3 Lambdas, `ActionsTable`, `FollowupsTable` | Done |
-| Reviewer dashboard, API, auth | API Gateway, Lambda, Cognito, S3/CloudFront | Read-only incident list and hosting implemented; notes/override not started |
+| Reviewer dashboard, API, auth | API Gateway, Lambda, Cognito, S3/CloudFront | Incident list, detail and history, readings chart, notes, override and sign-in implemented; end-to-end test on AWS pending |
 | Operational monitoring and cost alarm | CloudWatch, SNS | Dashboard, service alarms, billing alarm implemented |
 
 ## How the pipeline works
@@ -38,8 +38,8 @@ src/validate/app.py    # validates readings, drops invalid and duplicate ones
 src/detect/app.py      # sustained-vs-spike logic, opens incidents, tracks last-seen, starts workflow
 src/silence/app.py     # scheduled check for silent sensors, opens incidents, starts workflow
 src/workflow/app.py    # workflow steps: record action, follow-up check, resolve or escalate
-src/reviewer/app.py    # Cognito-protected, read-only incident-list API
-dashboard/index.html   # hosted reviewer dashboard with Cognito PKCE sign-in
+src/reviewer/app.py    # Cognito-protected reviewer API: incidents, detail, readings, notes, override
+dashboard/             # reviewer dashboard (index.html, app.js, api.js, auth.js); runs on mock data locally
 scripts/deploy_dashboard.py # writes stack config, uploads dashboard, invalidates CloudFront
 simulator/sim.py       # sends test readings (7 scenario modes)
 docs/contract.md       # agreed message format, issue definitions, tables, response flow
@@ -116,15 +116,17 @@ the separate IAM permissions required by the person or CI identity deploying the
 
 ### Reviewer dashboard and Cognito
 
-The stack creates an admin-managed Cognito user pool, a public OAuth client using authorization
-code with PKCE, a Cognito authorizer for `GET /incidents`, and a private S3 bucket served through
-CloudFront Origin Access Control. The dashboard page is `dashboard/index.html`; the read-only API
-handler is `src/reviewer/app.py`.
+The stack creates an admin-managed Cognito user pool, an app client and a `reviewers` group
+(see `docs/auth.md`), a Cognito authorizer on every reviewer API route, and a private S3 bucket
+served through CloudFront Origin Access Control. The dashboard is in `dashboard/`; the API
+handlers are in `src/reviewer/app.py`. Adding notes and overriding a status require the
+`reviewers` group.
 
-Choose a globally unique lowercase `CognitoDomainPrefix` at deployment. To give a reviewer access,
-open Cognito in the AWS console, select the `<stack-name>-reviewers` user pool, and create a user
-with the reviewer’s email. Self-registration is disabled. Sign-in uses the Cognito hosted UI; a
-reviewer may need to confirm their email or change a temporary password at first sign-in.
+To give a reviewer access, follow "Create a reviewer" in `docs/auth.md` (set a permanent password
+and add the user to the `reviewers` group). Self-registration is disabled. The dashboard signs in
+with `amazon-cognito-identity-js` (SRP), so no hosted-UI domain is needed.
+
+Opened as a local file, the dashboard runs on mock data (`USE_MOCK` in `dashboard/api.js`).
 
 After deployment completes and the CloudFront distribution is available, publish the dashboard:
 
@@ -138,8 +140,8 @@ CloudFormation `DescribeStacks`, S3 `PutObject`/`DeleteObject` for that bucket, 
 `CreateInvalidation`. Open the `DashboardUrl` stack output. The generated config contains public
 endpoint and client identifiers, not a client secret.
 
-The reviewer UI currently lists incidents and filters by status. It does not yet include reviewer
-notes, manual overrides, or full shipment reading history.
+The deployed page reads `config.json` (API URL, user pool ID, client ID) and switches from mock
+data to the real API automatically.
 
 ### CloudWatch operations dashboard and alarms
 
@@ -153,14 +155,13 @@ the SNS email subscription to receive alarm notifications.
 
 ```
 sam build
-sam deploy --guided --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com CognitoDomainPrefix=choose-a-unique-prefix
+sam deploy --guided --parameter-overrides BillingAlarmThreshold=10 BillingAlarmEmail=you@example.com
 ```
 
 Answers for the guided prompts: stack name `coldchain-sentinel`, region `us-east-1`,
 confirm changes `N`, allow IAM role creation `Y`, save arguments `Y`.
 For later deploys, run `sam build` then `sam deploy` with the same parameter overrides. Use
-`BillingAlarmEmail=` if you do not want email notifications. Replace the Cognito prefix with a
-unique lowercase value for your AWS region.
+`BillingAlarmEmail=` if you do not want email notifications.
 
 The first time an account uses IoT Core, its endpoint name can take a few minutes to resolve.
 If the simulator fails with a DNS error, wait and retry.
