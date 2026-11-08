@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ColdChain Sentinel</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>ColdChain Sentinel</h1>
+    <div id="user-box" hidden>
+      <span id="user-name"></span>
+      <button id="signout-btn" class="btn">Sign out</button>
+    </div>
+  </header>
+
+  <!-- SIGN-IN screen (only shown when USE_MOCK = false and nobody is signed in) -->
+  <section id="login-screen" class="login" hidden>
+    <form id="login-form" class="panel login-card">
+      <h2>Reviewer sign-in</h2>
+      <p class="muted">Use the reviewer account created for you.</p>
+      <label>Email <input name="email" type="email" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="error" hidden></p>
+      <button type="submit" class="btn primary">Sign in</button>
+    </form>
+  </section>
+
+  <main class="layout" id="app" hidden>
+    <!-- LEFT: list of incidents -->
+    <aside class="panel">
+      <h2>Incidents</h2>
+      <div id="filters">
+        <button class="chip active" data-status="ALL">All</button>
+        <button class="chip" data-status="OPEN">Open</button>
+        <button class="chip" data-status="ESCALATED">Escalated</button>
+        <button class="chip" data-status="RESOLVED">Resolved</button>
+      </div>
+      <ul id="incident-list"></ul>
+    </aside>
+
+    <!-- RIGHT: details of the selected incident -->
+    <section class="panel" id="detail">
+      <p class="muted">Select an incident to see its details.</p>
+    </section>
+  </main>
+
+  <!-- Chart.js draws the temperature chart -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Cognito sign-in library -->
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+  <script src="mock-data.js"></script>
+  <script src="api.js"></script>
+  <script src="auth.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

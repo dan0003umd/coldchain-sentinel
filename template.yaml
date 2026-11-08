@@ -8,6 +8,20 @@ Globals:
     Timeout: 10
     MemorySize: 256
 
+Parameters:
+  BillingAlarmThreshold:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: Estimated monthly AWS charges in USD that trigger the billing alarm.
+  BillingAlarmEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address for billing alarm notifications. Confirm the SNS subscription email after deployment.
+
+Conditions:
+  HasBillingAlarmEmail: !Not [!Equals [!Ref BillingAlarmEmail, '']]
+
 Resources:
   ReadingsTable:
     Type: AWS::DynamoDB::Table
@@ -69,6 +83,16 @@ Resources:
       KeySchema:
         - {AttributeName: incident_id, KeyType: HASH}
         - {AttributeName: check_ts, KeyType: RANGE}
+  NotesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: incident_id, AttributeType: S}
+        - {AttributeName: note_ts, AttributeType: S}
+      KeySchema:
+        - {AttributeName: incident_id, KeyType: HASH}
+        - {AttributeName: note_ts, KeyType: RANGE}
 
   ValidateFunction:
     Type: AWS::Serverless::Function
@@ -79,8 +103,11 @@ Resources:
         Variables:
           READINGS_TABLE: !Ref ReadingsTable
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ReadingsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt ReadingsTable.Arn
 
   DetectFunction:
     Type: AWS::Serverless::Function
@@ -98,12 +125,17 @@ Resources:
           SAFE_MAX: "5"
           N_CONSECUTIVE: "4"
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref ReadingsTable
-        - DynamoDBCrudPolicy:
-            TableName: !Ref IncidentsTable
-        - DynamoDBCrudPolicy:
-            TableName: !Ref SensorsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt ReadingsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt IncidentsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt SensorsTable.Arn
         - StepFunctionsExecutionPolicy:
             StateMachineName: !GetAtt IncidentWorkflow.Name
       Events:
@@ -130,10 +162,14 @@ Resources:
           WORKFLOW_ARN: !Ref IncidentWorkflow
           WAIT_SECONDS: "30"
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref SensorsTable
-        - DynamoDBCrudPolicy:
-            TableName: !Ref IncidentsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Scan
+              Resource: !GetAtt SensorsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt IncidentsTable.Arn
         - StepFunctionsExecutionPolicy:
             StateMachineName: !GetAtt IncidentWorkflow.Name
       Events:
@@ -159,8 +195,11 @@ Resources:
           N_CONSECUTIVE: "4"
           SILENCE_SECONDS: "90"
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ActionsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt ActionsTable.Arn
 
   FollowUpFunction:
     Type: AWS::Serverless::Function
@@ -170,12 +209,17 @@ Resources:
       Environment:
         Variables: *wfenv
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref ReadingsTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref SensorsTable
-        - DynamoDBCrudPolicy:
-            TableName: !Ref FollowupsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt ReadingsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt SensorsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt FollowupsTable.Arn
 
   UpdateIncidentFunction:
     Type: AWS::Serverless::Function
@@ -185,8 +229,130 @@ Resources:
       Environment:
         Variables: *wfenv
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref IncidentsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt IncidentsTable.Arn
+
+  ReviewerApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.handler
+      Environment:
+        Variables: &reviewerenv
+          INCIDENTS_TABLE: !Ref IncidentsTable
+          ACTIONS_TABLE: !Ref ActionsTable
+          FOLLOWUPS_TABLE: !Ref FollowupsTable
+          NOTES_TABLE: !Ref NotesTable
+          READINGS_TABLE: !Ref ReadingsTable
+          ALLOWED_ORIGIN: !Sub 'https://${DashboardDistribution.DomainName}'
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Scan
+              Resource: !GetAtt IncidentsTable.Arn
+      Events:
+        ListIncidents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /incidents
+            Method: GET
+  IncidentDetailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.get_incident
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt IncidentsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource:
+                - !GetAtt ActionsTable.Arn
+                - !GetAtt FollowupsTable.Arn
+                - !GetAtt NotesTable.Arn
+      Events:
+        IncidentDetail:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/incident
+            Method: GET
+
+  ReadingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.get_readings
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub '${ReadingsTable.Arn}/index/by-shipment'
+      Events:
+        Readings:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/readings
+            Method: GET
+
+  AddNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.add_note
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt NotesTable.Arn
+      Events:
+        AddNote:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /incidents/{incident_id}/notes
+            Method: POST
+
+  OverrideFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/reviewer/
+      Handler: app.override
+      Environment:
+        Variables: *reviewerenv
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt IncidentsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt NotesTable.Arn
+      Events:
+        Override:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ReviewerApi
+            Path: /shipments/{shipment_id}/override
+            Method: POST
 
   IncidentWorkflow:
     Type: AWS::Serverless::StateMachine
@@ -284,6 +450,230 @@ Resources:
               new_status: ESCALATED
             End: true
 
+  BillingAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-billing-alerts'
+  BillingAlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasBillingAlarmEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref BillingAlarmEmail
+      TopicArn: !Ref BillingAlarmTopic
+  EstimatedChargesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub 'Estimated charges reached the configured threshold of ${BillingAlarmThreshold} USD.'
+      AlarmName: !Sub '${AWS::StackName}-estimated-charges'
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      Statistic: Maximum
+      Period: 21600
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingAlarmThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: missing
+      AlarmActions:
+        - !Ref BillingAlarmTopic
+
+  ReviewerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Authorization,Content-Type'"
+        AllowOrigin: !Sub "'https://${DashboardDistribution.DomainName}'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt ReviewerUserPool.Arn
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  DashboardOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-dashboard-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - Id: DashboardS3Origin
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt DashboardOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: DashboardS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${DashboardBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}'
+
+  ValidateErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties: &lambda_errors_alarm
+      AlarmDescription: Lambda invocation errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ValidateFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  DetectErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DetectFunction
+  SilenceErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SilenceFunction
+  ReviewerApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ReviewerApiFunction
+  RecordActionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RecordActionFunction
+  FollowUpErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FollowUpFunction
+  UpdateIncidentErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      <<: *lambda_errors_alarm
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UpdateIncidentFunction
+  WorkflowFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Incident state machine executions failed.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref IncidentWorkflow
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  ReadingsThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Readings table requests were throttled.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref ReadingsTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  IncidentsThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Incidents table requests were throttled.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref IncidentsTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref BillingAlarmTopic]
+  SentinelDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-operations'
+      DashboardBody: !Sub |
+        {"widgets":[
+          {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"Lambda invocations and errors","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/Lambda","Invocations","FunctionName","${ValidateFunction}"],["AWS/Lambda","Errors","FunctionName","${ValidateFunction}",{"yAxis":"right"}],["AWS/Lambda","Invocations","FunctionName","${DetectFunction}"],["AWS/Lambda","Errors","FunctionName","${DetectFunction}",{"yAxis":"right"}],["AWS/Lambda","Invocations","FunctionName","${SilenceFunction}"],["AWS/Lambda","Errors","FunctionName","${SilenceFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${ReviewerApiFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${RecordActionFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${FollowUpFunction}",{"yAxis":"right"}],["AWS/Lambda","Errors","FunctionName","${UpdateIncidentFunction}",{"yAxis":"right"}]]}},
+          {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Lambda duration (milliseconds)","region":"${AWS::Region}","view":"timeSeries","stat":"Average","period":300,"metrics":[["AWS/Lambda","Duration","FunctionName","${ValidateFunction}"],["AWS/Lambda","Duration","FunctionName","${DetectFunction}"],["AWS/Lambda","Duration","FunctionName","${SilenceFunction}"],["AWS/Lambda","Duration","FunctionName","${ReviewerApiFunction}"],["AWS/Lambda","Duration","FunctionName","${RecordActionFunction}"],["AWS/Lambda","Duration","FunctionName","${FollowUpFunction}"],["AWS/Lambda","Duration","FunctionName","${UpdateIncidentFunction}"]] }},
+          {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Incident workflow executions","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","${IncidentWorkflow}"],["AWS/States","ExecutionsSucceeded","StateMachineArn","${IncidentWorkflow}"],["AWS/States","ExecutionsFailed","StateMachineArn","${IncidentWorkflow}"]]}},
+          {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"DynamoDB throttled requests","region":"${AWS::Region}","view":"timeSeries","stat":"Sum","period":300,"metrics":[["AWS/DynamoDB","ThrottledRequests","TableName","${ReadingsTable}"],["AWS/DynamoDB","ThrottledRequests","TableName","${IncidentsTable}"]]}}
+        ]}
+
   ReadingRule:
     Type: AWS::IoT::TopicRule
     Properties:
@@ -302,3 +692,70 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: iot.amazonaws.com
       SourceArn: !GetAtt ReadingRule.Arn
+  ReviewerUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-reviewers
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  ReviewerUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-dashboard
+      UserPoolId: !Ref ReviewerUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 1
+
+  ReviewerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: reviewers
+      UserPoolId: !Ref ReviewerUserPool
+      Description: People allowed to view alerts, add notes, and override actions
+
+Outputs:
+  ReviewerUserPoolId:
+    Value: !Ref ReviewerUserPool
+  ReviewerUserPoolArn:
+    Value: !GetAtt ReviewerUserPool.Arn
+  ReviewerUserPoolClientId:
+    Value: !Ref ReviewerUserPoolClient
+  ReviewerApiUrl:
+    Description: Authenticated reviewer API base URL.
+    Value: !Sub 'https://${ReviewerApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  DashboardBucketName:
+    Description: Private S3 bucket for dashboard static assets.
+    Value: !Ref DashboardBucket
+  DashboardDistributionId:
+    Description: CloudFront distribution ID used to invalidate cached dashboard files.
+    Value: !Ref DashboardDistribution
+  DashboardUrl:
+    Description: CloudFront URL for the reviewer dashboard.
+    Value: !Sub 'https://${DashboardDistribution.DomainName}/'
