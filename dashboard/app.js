@@ -1,6 +1,7 @@
 // ----- state: what the page is currently showing -----
 let currentFilter = "ALL";
 let selectedShipment = null;
+let allIncidents = []; // filled by listIncidents() from api.js
 
 // readable names for issue types and actions
 const ISSUE_LABEL = {
@@ -25,7 +26,7 @@ function renderList() {
   const list = document.getElementById("incident-list");
 
   // keep only incidents that match the filter
-  const visible = incidents.filter(
+  const visible = allIncidents.filter(
     (inc) => currentFilter === "ALL" || inc.status === currentFilter
   );
 
@@ -45,7 +46,8 @@ function renderList() {
 }
 
 // ----- build the history: merge events from all tables, sort by time -----
-function buildTimeline(inc) {
+function buildTimeline(d) {
+  const inc = d.incident;
   const events = [];
 
   // 1. incident opened (incidents table)
@@ -57,13 +59,13 @@ function buildTimeline(inc) {
   });
 
   // 2. actions (actions table)
-  (actions[inc.incident_id] || []).forEach((a) => {
+  d.actions.forEach((a) => {
     events.push({ ts: a.action_ts, type: "action",
       title: ACTION_LABEL[a.action_type] || a.action_type, body: `by ${a.requested_by}` });
   });
 
   // 3. follow-up checks (followups table)
-  (followups[inc.incident_id] || []).forEach((f) => {
+  d.followups.forEach((f) => {
     events.push({ ts: f.check_ts, type: f.problem_still_present ? "bad" : "good",
       title: `Follow-up check ${f.attempt + 1}: ` +
              (f.problem_still_present ? "problem still present" : "problem cleared"),
@@ -71,7 +73,7 @@ function buildTimeline(inc) {
   });
 
   // 4. notes (notes table)
-  (notes[inc.incident_id] || []).forEach((n) => {
+  d.notes.forEach((n) => {
     events.push({ ts: n.note_ts, type: n.override_flag ? "override" : "note",
       title: n.override_flag ? "Reviewer override" : "Note", body: `${n.author}: ${n.text}` });
   });
@@ -98,8 +100,7 @@ function buildTimeline(inc) {
 // ----- temperature chart (uses Chart.js) -----
 let chart = null; // keep the chart so we can delete it before drawing a new one
 
-function drawChart(shipmentId) {
-  const data = readings[shipmentId] || [];
+function drawChart(data) {
   const labels = data.map((r) => new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
   const temps = data.map((r) => r.temp_c);
 
@@ -136,9 +137,19 @@ function drawChart(shipmentId) {
 }
 
 // ----- draw the detail panel (right panel) -----
-function renderDetail(shipmentId) {
-  const inc = incidents.find((i) => i.shipment_id === shipmentId);
+async function renderDetail(shipmentId) {
   const panel = document.getElementById("detail");
+
+  // ask api.js for the incident + its history, and the readings
+  let d, data;
+  try {
+    d = await getIncident(shipmentId);
+    data = await getReadings(shipmentId);
+  } catch (err) {
+    panel.innerHTML = `<p class="error">Could not load ${shipmentId}: ${err.message}</p>`;
+    return;
+  }
+  const inc = d.incident;
 
   // facts that depend on the issue type
   const extra = inc.issue_type === "sustained_excursion"
@@ -165,7 +176,7 @@ function renderDetail(shipmentId) {
     <div class="two-col">
       <div>
         <h3>History</h3>
-        <ol class="timeline">${buildTimeline(inc)}</ol>
+        <ol class="timeline">${buildTimeline(d)}</ol>
       </div>
 
       <div>
@@ -190,49 +201,32 @@ function renderDetail(shipmentId) {
   `;
 
   // ----- add a note -----
-  document.getElementById("note-form").addEventListener("submit", (e) => {
+  document.getElementById("note-form").addEventListener("submit", async (e) => {
     e.preventDefault(); // stop the page from reloading
     const text = e.target.text.value.trim();
     if (!text) return;
-
-    // save into the notes "table" (later this becomes a POST to the API)
-    if (!notes[inc.incident_id]) notes[inc.incident_id] = [];
-    notes[inc.incident_id].push({
-      note_ts: new Date().toISOString(),
-      author: document.getElementById("user-name").textContent,
-      text: text,
-      override_flag: false,
-    });
-
-    renderDetail(inc.shipment_id); // redraw so the note shows in the history
+    const author = document.getElementById("user-name").textContent;
+    try {
+      await addNote(inc.incident_id, text, author); // api.js saves it
+    } catch (err) { return alertError(err); }
+    renderDetail(inc.shipment_id);                  // redraw so the note shows in the history
   });
 
   // ----- override the status -----
-  document.getElementById("override-form").addEventListener("submit", (e) => {
+  document.getElementById("override-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const newStatus = e.target.new_status.value;
     const reason = e.target.reason.value.trim();
     if (!reason) return;
-
-    // 1. remember what the workflow decided, then change the status
-    if (!inc.workflow_status) inc.workflow_status = inc.status;
-    inc.status = newStatus;
-    inc.overridden_by = document.getElementById("user-name").textContent;
-
-    // 2. record it as a note with override_flag = true (so there is a record of who and why)
-    if (!notes[inc.incident_id]) notes[inc.incident_id] = [];
-    notes[inc.incident_id].push({
-      note_ts: new Date().toISOString(),
-      author: inc.overridden_by,
-      text: `Status set to ${newStatus}: ${reason}`,
-      override_flag: true,
-    });
-
-    renderList();                // badge on the left changes
-    renderDetail(inc.shipment_id); // badge + history on the right change
+    const author = document.getElementById("user-name").textContent;
+    try {
+      await overrideStatus(inc.shipment_id, inc.incident_id, newStatus, reason, author); // api.js saves it
+    } catch (err) { return alertError(err); }
+    await loadIncidents();          // badge on the left changes
+    renderDetail(inc.shipment_id);  // badge + history on the right change
   });
 
-  drawChart(inc.shipment_id); // the canvas exists now, so draw the chart
+  drawChart(data); // the canvas exists now, so draw the chart
 }
 
 // ----- filter buttons -----
@@ -257,5 +251,63 @@ document.getElementById("incident-list").addEventListener("click", (e) => {
   renderDetail(selectedShipment);
 });
 
-// draw the list when the page loads
-renderList();
+// show an API error above the list (e.g. "Only reviewers can do this")
+function alertError(err) {
+  document.getElementById("incident-list").insertAdjacentHTML("beforebegin",
+    `<p class="error" id="api-error">${err.message}</p>`);
+  setTimeout(() => document.getElementById("api-error")?.remove(), 5000);
+}
+
+// ----- load incidents from api.js, then draw the list -----
+async function loadIncidents() {
+  try {
+    allIncidents = await listIncidents();
+  } catch (err) {
+    document.getElementById("incident-list").innerHTML = `<li class="error">${err.message}</li>`;
+    return;
+  }
+  renderList();
+}
+
+// ----- sign-in / sign-out -----
+function showLogin() {
+  document.getElementById("app").hidden = true;
+  document.getElementById("user-box").hidden = true;
+  document.getElementById("login-screen").hidden = false;
+}
+
+function showApp(email) {
+  document.getElementById("login-screen").hidden = true;
+  document.getElementById("app").hidden = false;
+  document.getElementById("user-box").hidden = false;
+  document.getElementById("user-name").textContent = email;
+  loadIncidents();
+}
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById("login-error");
+  errorBox.hidden = true;
+  try {
+    const email = await signIn(e.target.email.value.trim(), e.target.password.value);
+    e.target.password.value = "";
+    showApp(email);
+  } catch (err) {
+    errorBox.textContent = err.message;
+    errorBox.hidden = false;
+  }
+});
+
+document.getElementById("signout-btn").addEventListener("click", () => {
+  if (USE_MOCK) return; // nothing to sign out of in mock mode
+  signOut();
+});
+
+// ----- when the page loads -----
+async function start() {
+  if (USE_MOCK) return showApp("reviewer@umd.edu (mock)"); // fake data, no login
+  const email = await currentEmail();
+  if (email) showApp(email);   // already signed in (session kept by the library)
+  else showLogin();
+}
+start();

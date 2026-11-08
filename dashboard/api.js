@@ -2,36 +2,43 @@
 // api.js — the ONLY file that knows where the data comes from.
 // app.js calls these functions and never touches the data directly.
 //
-// Right now every function uses the fake data in mock-data.js.
-// When Swetha's API is deployed:
-//   1. put the API Gateway URL in API_BASE
-//   2. set USE_MOCK = false
-//   3. if her contract.md uses different paths, change them below
+// USE_MOCK = true  -> fake data from mock-data.js, no login needed
+// USE_MOCK = false -> Swetha's real API (api-dev branch), Cognito login required
+//
+// To go live, fill in the 3 values below from the stack outputs:
+//   aws cloudformation describe-stacks --stack-name coldchain-sentinel \
+//     --query "Stacks[0].Outputs" --output table
 // =====================================================================
 
-const API_BASE = ""; // e.g. "https://abc123.execute-api.us-east-1.amazonaws.com/prod"
 const USE_MOCK = true;
+const API_BASE = "";          // e.g. "https://abc123.execute-api.us-east-1.amazonaws.com/prod" (no / at the end)
+const USER_POOL_ID = "";      // ReviewerUserPoolId,       e.g. "us-east-1_AbCdEf123"
+const CLIENT_ID = "";         // ReviewerUserPoolClientId, e.g. "1a2b3c4d5e6f7g8h9i0j"
 
-// helper for the real API: send a request, get JSON back
+// helper for the real API: send a request with the login token, get JSON back
 async function callApi(method, path, body) {
+  const token = await getIdToken(); // from auth.js
   const res = await fetch(API_BASE + path, {
     method: method,
-    headers: { "Content-Type": "application/json" }, // Cognito token goes here later
+    headers: { "Content-Type": "application/json", Authorization: token },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
-  return res.json();
+  if (res.status === 401) {          // token missing or expired -> back to sign-in
+    signOut();
+    throw new Error("Please sign in again.");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || `${method} ${path} failed (${res.status})`);
+  return data;
 }
 
-// 1. all incidents (left list)
-//    real API: GET /incidents
+// 1. all incidents (left list)            GET /incidents
 async function listIncidents() {
   if (USE_MOCK) return incidents;
-  return (await callApi("GET", "/incidents")).items;
+  return (await callApi("GET", "/incidents?limit=100")).items;
 }
 
-// 2. one incident with its history (right panel)
-//    real API: GET /incidents/{shipment_id}
+// 2. one incident with its history        GET /shipments/{shipment_id}/incident
 async function getIncident(shipmentId) {
   if (USE_MOCK) {
     const inc = incidents.find((i) => i.shipment_id === shipmentId);
@@ -42,29 +49,27 @@ async function getIncident(shipmentId) {
       notes: notes[inc.incident_id] || [],
     };
   }
-  return callApi("GET", `/incidents/${shipmentId}`);
+  return callApi("GET", `/shipments/${encodeURIComponent(shipmentId)}/incident`);
 }
 
-// 3. temperature readings for the chart
-//    real API: GET /shipments/{shipment_id}/readings
+// 3. temperature readings for the chart   GET /shipments/{shipment_id}/readings
 async function getReadings(shipmentId) {
   if (USE_MOCK) return readings[shipmentId] || [];
-  return (await callApi("GET", `/shipments/${shipmentId}/readings`)).items;
+  return (await callApi("GET", `/shipments/${encodeURIComponent(shipmentId)}/readings`)).items;
 }
 
-// 4. add a note
-//    real API: POST /incidents/{incident_id}/notes   body: { text }
+// 4. add a note                           POST /incidents/{incident_id}/notes  {text}
+//    (the real API takes the author from the login token)
 async function addNote(incidentId, text, author) {
   if (USE_MOCK) {
     if (!notes[incidentId]) notes[incidentId] = [];
     notes[incidentId].push({ note_ts: new Date().toISOString(), author, text, override_flag: false });
     return;
   }
-  return callApi("POST", `/incidents/${incidentId}/notes`, { text });
+  return callApi("POST", `/incidents/${encodeURIComponent(incidentId)}/notes`, { text });
 }
 
-// 5. override the status
-//    real API: POST /incidents/{shipment_id}/override   body: { incident_id, new_status, reason }
+// 5. override the status                  POST /shipments/{shipment_id}/override  {incident_id, new_status, reason}
 async function overrideStatus(shipmentId, incidentId, newStatus, reason, author) {
   if (USE_MOCK) {
     const inc = incidents.find((i) => i.shipment_id === shipmentId);
@@ -76,6 +81,6 @@ async function overrideStatus(shipmentId, incidentId, newStatus, reason, author)
       text: `Status set to ${newStatus}: ${reason}`, override_flag: true });
     return;
   }
-  return callApi("POST", `/incidents/${shipmentId}/override`,
+  return callApi("POST", `/shipments/${encodeURIComponent(shipmentId)}/override`,
     { incident_id: incidentId, new_status: newStatus, reason });
 }

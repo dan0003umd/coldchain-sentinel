@@ -61,5 +61,16 @@ body { margin: 0; font-family: Arial, sans-serif; background: #f4f6f8; color: #1
 .btn { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; }
 .btn.primary { background: #0f6e8c; color: white; border-color: #0f6e8c; }
 
+/* top bar user + sign out */
+#user-box { display: flex; align-items: center; gap: 10px; }
+
+/* sign-in screen */
+.login { display: grid; place-items: center; padding: 60px 16px; }
+.login-card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
+.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #5d6b78; }
+.login-card input { font: inherit; padding: 9px 10px; border: 1px solid #e1e6eb; border-radius: 6px; color: #15202b; }
+.error { color: #c53030; background: #fde8e8; padding: 8px 10px; border-radius: 6px; margin: 0; }
+[hidden] { display: none !important; }
+
 /* phone layout: stack the panels */
 @media (max-width: 800px) { .layout, .two-col { grid-template-columns: 1fr; } }
